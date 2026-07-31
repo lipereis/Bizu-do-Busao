@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bizu no Busão 🚌 - Rio de Janeiro em Tempo Real</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <!-- Font Awesome para Ícones -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    body,
+    html {
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    #map {
+      height: 100vh;
+      width: 100vw;
+      z-index: 1;
+    }
+
+    /* Painel Flutuante Superior */
+    .search-panel {
+      position: absolute;
+      top: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      padding: 12px 20px;
+      border-radius: 30px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: 90%;
+      width: 450px;
+    }
+
+    .search-panel input {
+      flex: 1;
+      border: none;
+      outline: none;
+      font-size: 15px;
+      padding: 8px 12px;
+      background: #f0f2f5;
+      border-radius: 20px;
+    }
+
+    .search-panel button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .search-panel button:hover {
+      background: #0056b3;
+    }
+
+    .btn-radar {
+      background: #28a745 !important;
+    }
+
+    .btn-radar:hover {
+      background: #1e7e34 !important;
+    }
+
+    /* Badge Informativo */
+    .info-badge {
+      position: absolute;
+      bottom: 25px;
+      left: 20px;
+      z-index: 1000;
+      background: white;
+      padding: 10px 18px;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+      font-size: 14px;
+      color: #333;
+    }
+
+    .info-badge strong {
+      color: #007bff;
+    }
+
+    /* Customizacao de Marcadores do Mapa */
+    .bus-icon {
+      background: #007bff;
+      color: white;
+      border-radius: 50%;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid white;
+      box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3);
+      font-size: 14px;
+    }
+
+    .popup-content {
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .popup-content h3 {
+      margin-bottom: 6px;
+      color: #007bff;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Painel de Busca de Linhas e Radar -->
+  <div class="search-panel">
+    <i class="fa-solid fa-bus-simple" style="color: #007bff; font-size: 18px;"></i>
+    <input type="text" id="linhaInput" placeholder="Ex: 483, 309, 474..." />
+    <button onclick="buscarLinha()">
+      <i class="fa-solid fa-magnifying-glass"></i> Buscar
+    </button>
+    <button class="btn-radar" onclick="ativarRadar()" title="Buscar ônibus perto de mim">
+      <i class="fa-solid fa-location-crosshairs"></i> Radar
+    </button>
+  </div>
+
+  <!-- Contador de ônibus ativos -->
+  <div class="info-badge" id="infoBadge">
+    🚌 Digite uma linha acima ou clique em <strong>Radar</strong> para ver os ônibus.
+  </div>
+
+  <!-- Container do Mapa -->
+  <div id="map"></div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    // Inicializa o Mapa centrado no Rio de Janeiro
+    const map = L.map('map').setView([-22.9068, -43.1729], 12);
+
+    // Camada de Azulejos (Tile Layer) - OpenStreetMap
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap contributors | Bizu no Busão 🚌'
+    }).addTo(map);
+
+    let marcadoresGroup = L.layerGroup().addTo(map);
+    let autoRefreshTimer = null;
+    let ultimaBusca = null;
+
+    // Função para renderizar ônibus no mapa
+    function renderizarOnibus(veiculos, titulo) {
+      marcadoresGroup.clearLayers();
+
+      const badge = document.getElementById('infoBadge');
+
+      if (!veiculos || veiculos.length === 0) {
+        badge.innerHTML = `⚠️ Nenhum ônibus encontrado para a busca recente.`;
+        return;
+      }
+
+      badge.innerHTML = `🚌 <strong>${veiculos.length}</strong> ônibus encontrados (${titulo})`;
+
+      const bounds = [];
+
+      veiculos.forEach(v => {
+        const lat = parseFloat(v.latitude);
+        const lng = parseFloat(v.longitude);
+
+        if (!isNaN(lat) && !isNaN(lng)) {
+          bounds.push([lat, lng]);
+
+          // Criar ícone customizado para o ônibus
+          const iconHtml = `<div class="bus-icon"><i class="fa-solid fa-bus"></i></div>`;
+          const customIcon = L.divIcon({
+            html: iconHtml,
+            className: '',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+          });
+
+          const horaFormatada = new Date(v.data_hora_sinal).toLocaleTimeString('pt-BR');
+
+          const popupText = `
+            <div class="popup-content">
+              <h3>Linha ${v.linha_codigo || 'N/A'}</h3>
+              <p><strong>Veículo:</strong> ${v.ordem_veiculo}</p>
+              <p><strong>Velocidade:</strong> ${v.velocidade} km/h</p>
+              <p><strong>Último sinal:</strong> ${horaFormatada}</p>
+              ${v.distancia_km ? `<p><strong>Distância:</strong> ${v.distancia_km} km</p>` : ''}
+            </div>
+          `;
+
+          L.marker([lat, lng], { icon: customIcon })
+            .bindPopup(popupText)
+            .addTo(marcadoresGroup);
+        }
+      });
+
+      // Ajusta o zoom para mostrar todos os ônibus encontrados
+      if (bounds.length > 0) {
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+      }
+    }
+
+    // Buscar ônibus por Linha (Ex: 483)
+    async function buscarLinha() {
+      const linha = document.getElementById('linhaInput').value.trim();
+      if (!linha) return alert('Por favor, digite o número de uma linha de ônibus.');
+
+      ultimaBusca = () => buscarLinha();
+
+      try {
+        const response = await fetch(`/api/onibus/${linha}`);
+        const data = await response.json();
+        renderizarOnibus(data.veiculos, `Linha ${linha}`);
+      } catch (err) {
+        alert('Erro ao buscar dados da linha.');
+      }
+    }
+
+    // Buscar ônibus pelo Radar de Proximidade (GPS do usuário)
+    function ativarRadar() {
+      if (!navigator.geolocation) {
+        return alert('Geolocalização não é suportada pelo seu navegador.');
+      }
+
+      document.getElementById('infoBadge').innerHTML = '📡 Obtendo sua localização GPS...';
+
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+
+        // Desenhar marcador da posição do usuário
+        L.marker([lat, lng], {
+          icon: L.divIcon({
+            html: `<div style="background:#28a745; color:white; width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; border:2px solid white; box-shadow:0 3px 6px rgba(0,0,0,0.3)"><i class="fa-solid fa-user"></i></div>`,
+            className: '',
+            iconSize: [28, 28],
+            iconAnchor: [14, 14]
+          })
+        }).bindPopup('📍 Você está aqui').addTo(marcadoresGroup);
+
+        ultimaBusca = () => executarRadar(lat, lng);
+        await executarRadar(lat, lng);
+
+      }, (err) => {
+        alert('Não foi possível obter sua localização. Verifique as permissões no navegador.');
+      });
+    }
+
+    async function executarRadar(lat, lng) {
+      try {
+        const response = await fetch(`/api/radar?lat=${lat}&lng=${lng}&raio=3`);
+        const data = await response.json();
+        renderizarOnibus(data.onibus, `Radar ~3km`);
+      } catch (err) {
+        alert('Erro ao executar o radar.');
+      }
+    }
+
+    // Permite buscar ao apertar Enter no input
+    document.getElementById('linhaInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') buscarLinha();
+    });
+
+    // Auto-refresh a cada 15 segundos se houver uma busca ativa
+    setInterval(() => {
+      if (ultimaBusca) {
+        console.log('🔄 Atualizando posições no mapa...');
+        ultimaBusca();
+      }
+    }, 15000);
+  </script>
+</body>
+
+</html>

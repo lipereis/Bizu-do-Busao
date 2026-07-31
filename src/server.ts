@@ -2,21 +2,44 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createServer } from 'http';
+import { Server, Socket } from 'socket.io';
 import { pool } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, { cors: { origin: '*' } });
+
 app.use(cors());
 app.use(express.json());
-
-// Servir arquivos estaticos da pasta 'public'
 app.use(express.static(path.join(__dirname, '../public')));
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-// Rota para entregar a interface web
+io.on('connection', (socket: Socket) => {
+  console.log(`🔌 Cliente conectado via WebSocket: ${socket.id}`);
+  socket.on('disconnect', () => console.log(`❌ Cliente desconectado: ${socket.id}`));
+});
+
+export { io };
+
+// --- FUNÇÃO AUXILIAR DE CÁLCULO DE ETA (Estimativa de Chegada em Minutos) ---
+function calcularETA(distanciaKm: number, velocidadeAtualKmH: number): number {
+  // Se o ônibus estiver parado ou em velocidade muito baixa, assume velocidade média urbana do Rio (20 km/h)
+  const velocidadeEfetiva = velocidadeAtualKmH > 5 ? velocidadeAtualKmH : 20;
+  
+  // Horas = Distância / Velocidade
+  const tempoHoras = distanciaKm / velocidadeEfetiva;
+  const tempoMinutos = Math.round(tempoHoras * 60);
+
+  return tempoMinutos < 1 ? 1 : tempoMinutos; // Retorna no mínimo 1 minuto
+}
+
+// --- ROTAS DA API ---
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
@@ -42,12 +65,13 @@ app.get('/api/linhas', async (req, res) => {
   }
 });
 
-// 2. Buscar última posição dos ônibus de uma linha específica
+// 2. Buscar ônibus de uma linha específica com cálculo de ETA
 app.get('/api/onibus/:linha', async (req, res) => {
   const { linha } = req.params;
+  const { lat, lng } = req.query;
 
   try {
-    const [rows] = await pool.query(`
+    const [rows]: any = await pool.query(`
       SELECT g.ordem_veiculo, g.linha_codigo, g.latitude, g.longitude, g.velocidade, g.data_hora_sinal
       FROM gps_posicoes g
       INNER JOIN (
@@ -61,24 +85,43 @@ app.get('/api/onibus/:linha', async (req, res) => {
       ORDER BY g.data_hora_sinal DESC
     `, [linha, linha]);
 
-    res.json({
-      linha,
-      total_veiculos_ativos: (rows as any[]).length,
-      veiculos: rows
-    });
+    let veiculos = rows;
+
+    // Se o cliente forneceu sua coordenada GPS, calcula a distância e ETA para cada ônibus
+    if (lat && lng) {
+      const userLat = Number(lat);
+      const userLng = Number(lng);
+
+      veiculos = rows.map((v: any) => {
+        const R = 6371; // Raio da Terra em KM
+        const dLat = (v.latitude - userLat) * Math.PI / 180;
+        const dLng = (v.longitude - userLng) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(userLat * Math.PI / 180) * Math.cos(v.latitude * Math.PI / 180) *
+                  Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        const dist = Math.round((R * c) * 100) / 100;
+
+        return {
+          ...v,
+          distancia_km: dist,
+          eta_minutos: calcularETA(dist, v.velocidade)
+        };
+      });
+    }
+
+    res.json({ linha, total_veiculos_ativos: veiculos.length, veiculos });
   } catch (error: any) {
     res.status(500).json({ erro: 'Erro ao buscar ônibus da linha', detalhe: error.message });
   }
 });
 
-// 3. Radar de proximidade em KM
+// 3. Endpoint por Radar de Proximidade com ETA
 app.get('/api/radar', async (req, res) => {
   const { lat, lng, raio } = req.query;
 
   if (!lat || !lng) {
-    return res.status(400).json({ 
-      erro: 'Informe lat e lng na URL. Ex: /api/radar?lat=-22.9068&lng=-43.1729&raio=5' 
-    });
+    return res.status(400).json({ erro: 'Informe lat e lng na URL.' });
   }
 
   const raioKm = Number(raio) || 5.0;
@@ -86,7 +129,7 @@ app.get('/api/radar', async (req, res) => {
   const lngNum = Number(lng);
 
   try {
-    const [rows] = await pool.query(`
+    const [rows]: any = await pool.query(`
       SELECT g.ordem_veiculo, g.linha_codigo, g.latitude, g.longitude, g.velocidade, g.data_hora_sinal,
         ROUND(
           6371 * acos(
@@ -109,17 +152,32 @@ app.get('/api/radar', async (req, res) => {
       LIMIT 100
     `, [latNum, lngNum, latNum, raioKm]);
 
+    const resultadoComETA = rows.map((v: any) => ({
+      ...v,
+      eta_minutos: calcularETA(v.distancia_km, v.velocidade)
+    }));
+
     res.json({
-      radar: 'Bizu no Busão Radar 📡',
+      radar: 'Bizu no Busão Radar + ETA 📡⏱️',
       raio_km: raioKm,
-      total_encontrados: (rows as any[]).length,
-      onibus: rows
+      total_encontrados: resultadoComETA.length,
+      onibus: resultadoComETA
     });
   } catch (error: any) {
-    res.status(500).json({ erro: 'Erro ao processar radar de ônibus', detalhe: error.message });
+    res.status(500).json({ erro: 'Erro no radar', detalhe: error.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Bizu no Busão Web & API rodando em http://localhost:${PORT}`);
-});
+// --- INICIALIZAÇÃO DO SERVIDOR ---
+// Verifica se o arquivo está sendo executado diretamente (npm run dev)
+// evitando abrir a porta 3000 duas vezes quando importado pelo worker
+const isMainModule = process.argv[1] && (
+  process.argv[1].endsWith('server.ts') || 
+  process.argv[1].endsWith('server.js')
+);
+
+if (isMainModule) {
+  httpServer.listen(PORT, () => {
+    console.log(`🚀 Bizu no Busão API + Socket.io rodando em http://localhost:${PORT}`);
+  });
+}

@@ -1,119 +1,77 @@
 import axios from 'axios';
 import { pool } from './db.js';
 
-interface VeiculoRio {
-  ordem?: string;
-  linha?: string;
-  latitude?: string | number;
-  longitude?: string | number;
-  velocidade?: string | number;
-  datahora?: string | number;
-  datahoraenvio?: string | number;
-}
+// URL da API de dados abertos de GPS do Rio de Janeiro
+const API_URL = 'https://dados.mobilidade.rio/gps/sppo';
 
-function parseNumeroRio(valor: any): number {
-  if (valor === undefined || valor === null) return 0;
-  // Se for string com virgula ("-22,9181"), troca a virgula por ponto antes de converter
-  if (typeof valor === 'string') {
-    return parseFloat(valor.replace(',', '.'));
-  }
-  return Number(valor);
-}
+async function processarGPS() {
+  console.log('🔄 [Worker] Buscando GPS da API do Rio...');
 
-function formatarDataMySQL(timestampRaw: any): string {
-  const ts = Number(timestampRaw);
-  
-  if (!ts || isNaN(ts)) {
-    return new Date().toISOString().slice(0, 19).replace('T', ' ');
-  }
-  
-  const data = new Date(ts);
-  if (isNaN(data.getTime())) {
-    return new Date().toISOString().slice(0, 19).replace('T', ' ');
-  }
-  
-  return data.toISOString().slice(0, 19).replace('T', ' ');
-}
-
-async function limparDadosAntigos() {
   try {
-    const [result]: any = await pool.query(`
-      DELETE FROM gps_posicoes 
-      WHERE data_hora_sinal < NOW() - INTERVAL 2 HOUR
-    `);
-    if (result.affectedRows > 0) {
-      console.log(`🧹 Limpeza: ${result.affectedRows} registros antigos removidos.`);
-    }
-  } catch (error: any) {
-    console.error('⚠️ Erro ao limpar dados antigos:', error.message);
-  }
-}
+    // Timeout aumentado para 25 segundos para evitar estouros em momentos de pico da API
+    const response = await axios.get(API_URL, { timeout: 25000 });
+    const dados = response.data;
 
-async function buscarESalvarGPS() {
-  try {
-    console.log('🔄 Buscando posições de GPS da API do Rio...');
+    const posicoes = Array.isArray(dados) 
+      ? dados 
+      : (dados.veiculos || dados.dados || []);
 
-    const response = await axios.get<VeiculoRio[]>('https://dados.mobilidade.rio/gps/sppo', {
-      timeout: 15000,
-      headers: { 'Accept-Encoding': 'gzip,deflate,compress' }
-    });
-
-    const veiculos = response.data;
-
-    if (!Array.isArray(veiculos) || veiculos.length === 0) {
-      console.log('⚠️ Nenhum dado retornado da API neste momento.');
+    if (posicoes.length === 0) {
+      console.log('⚠️ [Worker] Nenhum dado retornado pela API neste ciclo.');
       return;
     }
 
-    const dadosValidos: any[][] = [];
+    let inseridos = 0;
 
-    for (const v of veiculos) {
-      const lat = parseNumeroRio(v.latitude);
-      const lng = parseNumeroRio(v.longitude);
-      const vel = parseNumeroRio(v.velocidade);
-      const dataFormatada = formatarDataMySQL(v.datahora || v.datahoraenvio);
+    for (const pos of posicoes) {
+      const ordem = pos.ordem || pos.ordem_veiculo || pos.id;
+      const linha = pos.linha || pos.linha_codigo || 'N/A';
+      const lat = parseFloat(pos.latitude);
+      const lng = parseFloat(pos.longitude);
+      const vel = parseFloat(pos.velocidade) || 0;
 
-      // Valida latitude e longitude reais do Rio de Janeiro (~ -22.x e -43.x)
-      if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
-        dadosValidos.push([
-          v.ordem || 'DESCONHECIDO',
-          v.linha || 'N/A',
-          lat,
-          lng,
-          vel,
-          dataFormatada,
-        ]);
+      const rawData = pos.datahora || pos.dataHora || pos.data_hora || pos.timestamp;
+      let dataHoraValidada: Date;
+
+      if (rawData) {
+        const parsedDate = new Date(rawData);
+        dataHoraValidada = isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
+      } else {
+        dataHoraValidada = new Date();
+      }
+
+      if (ordem && !isNaN(lat) && !isNaN(lng) && lat !== 0) {
+        await pool.query(
+          `INSERT INTO gps_posicoes (ordem_veiculo, linha_codigo, latitude, longitude, velocidade, data_hora_sinal)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [ordem, String(linha), lat, lng, vel, dataHoraValidada]
+        );
+        inseridos++;
       }
     }
 
-    if (dadosValidos.length === 0) {
-      console.log('⚠️ Nenhum registro passou no filtro de coordenadas válidas.');
-      return;
+    console.log(`✅ [Worker] Sucesso! ${inseridos} posições de GPS salvas no banco.`);
+
+    // --- PURGE JOB (Limpeza de dados com mais de 2 horas) ---
+    const [result]: any = await pool.query(
+      `DELETE FROM gps_posicoes WHERE data_hora_sinal < NOW() - INTERVAL 2 HOUR`
+    );
+    
+    if (result && result.affectedRows > 0) {
+      console.log(`🧹 [Purge] ${result.affectedRows} registros antigos removidos do banco.`);
     }
-
-    const TAMANHO_LOTE = 2000;
-    let totalInserido = 0;
-
-    const sql = `
-      INSERT INTO gps_posicoes 
-      (ordem_veiculo, linha_codigo, latitude, longitude, velocidade, data_hora_sinal) 
-      VALUES ?
-    `;
-
-    for (let i = 0; i < dadosValidos.length; i += TAMANHO_LOTE) {
-      const lote = dadosValidos.slice(i, i + TAMANHO_LOTE);
-      const [result]: any = await pool.query(sql, [lote]);
-      totalInserido += result.affectedRows;
-    }
-
-    console.log(`🚀 ${totalInserido} posições salvas com sucesso no MySQL!`);
-    await limparDadosAntigos();
-    console.log('');
 
   } catch (error: any) {
-    console.error('❌ Erro na ingestão de dados:', error.message);
+    if (error.code === 'ECONNABORTED') {
+      console.warn('⏱️ [Worker] A API do Rio demorou para responder (Timeout). Tentando novamente no próximo ciclo...');
+    } else {
+      console.error('❌ [Worker] Erro ao buscar/salvar GPS:', error.message);
+    }
   }
 }
 
-buscarESalvarGPS();
-setInterval(buscarESalvarGPS, 30000);
+// Execução inicial
+processarGPS();
+
+// Executa em loop a cada 30 segundos
+setInterval(processarGPS, 30000);

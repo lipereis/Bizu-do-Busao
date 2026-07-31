@@ -1,0 +1,18 @@
+# Arquivos de configuração sensíveis (NUNCA SUBIR PRO GITHUB)
+.env
+.env.local
+
+# Dependências do Node (muito pesadas para subir)
+node_modules/
+
+# Arquivos compilados / Build
+dist/
+build/
+
+# Logs de erro
+*.log
+npm-debug.log*
+
+# Arquivos de sistema operacional
+.DS_Store
+Thumbs.db

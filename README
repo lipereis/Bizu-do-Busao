@@ -1,48 +1,104 @@
-# 🚌 Bizu no Busão — Rio de Janeiro em Tempo Real
+🚌 Bizu no Busão — Rio de Janeiro em Tempo Real
+O Bizu no Busão é uma aplicação Full-Stack desenvolvida para rastrear a frota de ônibus urbanos do Rio de Janeiro em tempo real. O sistema consome a API de dados abertos da prefeitura, processa centenas de milhares de coordenadas via Worker assíncrono, armazena em banco MySQL e exibe tudo em um mapa interativo e intuitivo.
 
-O **Bizu no Busão** é uma aplicação Full-Stack desenvolvida para rastrear a frota de ônibus urbanos do Rio de Janeiro em tempo real. O sistema consome a API de dados abertos da prefeitura, processa centenas de milhares de coordenadas via Worker assíncrono, armazena em banco MySQL e exibe tudo em um mapa interativo e intuitivo.
+🚀 Funcionalidades
+Ingestão em Tempo Real: Worker em Node.js/TypeScript que consome e trata dados de GPS a cada 30 segundos.
 
----
+Limpeza Automática (Purge Job): Manutenção contínua do banco de dados removendo posições antigas (com mais de 2 horas) para otimização de espaço e performance.
 
-## 🚀 Funcionalidades
+Tratamento de Dados: Filtros para correção de coordenadas malformadas, timestamps nulos e parsing de formatos da API.
 
-- **Ingestão em Tempo Real:** Worker em Node.js/TypeScript que consome e trata dados de GPS a cada 30 segundos.
-- **Limpeza Automática (Purge Job):** Manutenção contínua do banco de dados removendo posições antigas (com mais de 2 horas) para otimização de espaço e performance.
-- **Tratamento de Dados:** Filtros para correção de coordenadas malformadas, timestamps nulos e parsing de formatos da API.
-- **API RESTful:** Endpoints em Express para listar linhas ativas, consultar a posição mais recente de veículos e realizar buscas por radar.
-- **Radar de Proximidade:** Cálculo da distância Haversine em SQL para encontrar os ônibus mais próximos do GPS do usuário.
-- **Front-End Interativo:** Interface limpa com Leaflet.js e OpenStreetMap, mostrando ícones dinâmicos, popups de velocidade/horário e auto-refresh.
+API RESTful e WebSocket: Endpoints em Express para listar linhas ativas, consultar a posição mais recente de veículos, realizar buscas por radar e transmitir atualizações em tempo real com Socket.io.
 
----
+Radar de Proximidade: Cálculo da distância Haversine em SQL para encontrar os ônibus mais próximos do GPS do usuário.
 
-## 🛠️ Tecnologias Utilizadas
+Estimativa de Chegada (ETA): Cálculo em tempo real dos minutos estimados para o ônibus chegar até o passageiro.
 
-### Backend
-- **Node.js** + **TypeScript**
-- **Express** (API REST e servidor de estáticos)
-- **MySQL** (banco de dados relacional com queries espaciais/matemáticas)
-- **Axios** (cliente HTTP para consumo da API pública)
-- **dotenv** (gerenciamento de variáveis de ambiente)
+Front-End Interativo: Interface limpa com Leaflet.js e OpenStreetMap, mostrando ícones dinâmicos, popups de velocidade/horário e auto-refresh.
 
-### Frontend
-- **HTML5 / CSS3 / JavaScript (ES6+)**
-- **Leaflet.js** (renderização de mapas interativos)
-- **FontAwesome** (iconografia)
+🛠️ Tecnologias Utilizadas
+Backend
+Node.js + TypeScript
 
----
+Express (API REST e servidor de estáticos)
 
-## ⚙️ Pré-requisitos
+Socket.io (Comunicação em tempo real via WebSockets)
 
+MySQL (Banco de dados relacional com queries espaciais/matemáticas)
+
+Axios (Cliente HTTP para consumo da API pública)
+
+dotenv (Gerenciamento de variáveis de ambiente)
+
+Frontend
+HTML5 / CSS3 / JavaScript (ES6+)
+
+Leaflet.js (Renderização de mapas interativos)
+
+FontAwesome (Iconografia)
+
+⚙️ Pré-requisitos
 Antes de começar, certifique-se de ter instalado em sua máquina:
-- [Node.js](https://nodejs.org/) (v18+)
-- [MySQL Server](https://www.mysql.com/) e [MySQL Workbench](https://www.mysql.com/products/workbench/)
-- [Git](https://git-scm.com/)
 
----
+Node.js (v18+)
 
-## 📦 Como Rodar o Projeto
+MySQL Server e MySQL Workbench
 
-### 1. Clonar o repositório
-```bash
-git clone [https://github.com/SEU_USUARIO/bizu-no-busao.git](https://github.com/SEU_USUARIO/bizu-no-busao.git)
+Git
+
+📦 Como Rodar o Projeto
+1. Clonar o repositório
+git clone https://github.com/SEU_USUARIO/bizu-no-busao.git
 cd bizu-no-busao
+
+2. Instalar as dependências
+npm install
+
+3. Configurar as variáveis de ambiente
+Crie um arquivo .env na raiz do projeto conforme o modelo abaixo:
+
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASS=sua_senha_aqui
+DB_NAME=rio_transporte
+
+4. Criar a estrutura do Banco de Dados
+No MySQL Workbench, crie o schema e a tabela executando o script SQL:
+
+CREATE DATABASE IF NOT EXISTS rio_transporte;
+USE rio_transporte;
+
+CREATE TABLE IF NOT EXISTS gps_posicoes (
+id INT AUTO_INCREMENT PRIMARY KEY,
+ordem_veiculo VARCHAR(20) NOT NULL,
+linha_codigo VARCHAR(20) NOT NULL,
+latitude DECIMAL(10, 8) NOT NULL,
+longitude DECIMAL(11, 8) NOT NULL,
+velocidade DECIMAL(5, 2) DEFAULT 0,
+data_hora_sinal DATETIME NOT NULL,
+criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+INDEX idx_linha (linha_codigo),
+INDEX idx_ordem (ordem_veiculo),
+INDEX idx_data (data_hora_sinal)
+);
+
+5. Iniciar o Worker de Ingestão de GPS
+Em um terminal, rode o worker:
+
+npm run worker
+
+6. Iniciar o Servidor Web & API
+Em outro terminal, inicie o servidor Express:
+
+npm run dev
+
+7. Acesse no Navegador
+Abra http://localhost:3000 para ver o mapa rodando em tempo real!
+
+📡 Endpoints da API
+GET /api/linhas — Lista todas as linhas ativas e quantidade de ônibus.
+
+GET /api/onibus/:linha — Retorna a posição mais recente dos ônibus da linha especificada (aceita lat e lng para cálculo de ETA).
+
+GET /api/radar?lat=-22.9068&lng=-43.1729&raio=3 — Retorna ônibus em um raio de até X km da localização informada com ETA.
